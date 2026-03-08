@@ -270,6 +270,26 @@ letter-spacing: 1px;
     <div class="score-item"><div class="score-icon">🎯</div><div class="score-text"><div class="score-lbl">MA Trend</div><div class="score-val" id="sc4">—</div></div></div>
   </div>
 </div>
+
+<!-- ICT: FVG KARTI -->
+<div class="ind-card" style="margin-bottom:12px;">
+  <div class="ind-label">⚡ ICT — FAIR VALUE GAP (FVG)</div>
+  <div id="fvgList"><div style="font-size:11px;color:var(--muted);text-align:center;padding:10px 0;">Hesaplanıyor...</div></div>
+  <div style="margin-top:10px;display:flex;gap:8px;">
+    <div style="flex:1;background:#080810;border-radius:8px;padding:8px 10px;">
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px;">BULLISH FVG</div>
+      <div class="macd-v" id="fvgBullCount" style="color:#00ff88;">—</div>
+    </div>
+    <div style="flex:1;background:#080810;border-radius:8px;padding:8px 10px;">
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px;">BEARISH FVG</div>
+      <div class="macd-v" id="fvgBearCount" style="color:#ff4466;">—</div>
+    </div>
+    <div style="flex:1;background:#080810;border-radius:8px;padding:8px 10px;">
+      <div style="font-size:9px;color:var(--muted);margin-bottom:3px;">FVG SİNYAL</div>
+      <div class="macd-v" id="fvgSignal">—</div>
+    </div>
+  </div>
+</div>
 ```
 
   </div>
@@ -351,6 +371,7 @@ let INTERVAL = 10000;
 const BASE = 'https://api.binance.com/api/v3';
 
 let history = {};
+let candles = {}; // OHLC mum verisi FVG için
 let selected = COINS[0];
 let running = true;
 let timer = null;
@@ -385,7 +406,8 @@ function sendNotif(coin, signal, price) {
 // ─── INIT ────────────────────────────────────────────────────
 async function init() {
   history = {};
-  COINS.forEach(c => history[c] = []);
+  candles = {};
+  COINS.forEach(c => { history[c] = []; candles[c] = []; });
   buildTabs();
   await loadKlines();
   updateUI();
@@ -398,6 +420,10 @@ async function loadKlines() {
       const r = await fetch(`${BASE}/klines?symbol=${coin}&interval=${KLINE}&limit=100`);
       const d = await r.json();
       history[coin] = d.map(k => parseFloat(k[4]));
+      candles[coin] = d.map(k => ({
+        o: parseFloat(k[1]), h: parseFloat(k[2]),
+        l: parseFloat(k[3]), c: parseFloat(k[4])
+      }));
     } catch {}
   }));
 }
@@ -408,7 +434,17 @@ async function tick() {
     const data = await r.json();
     const map = Object.fromEntries(data.map(d => [d.symbol, parseFloat(d.price)]));
     COINS.forEach(c => {
-      if (map[c]) history[c] = [...(history[c] || []).slice(-99), map[c]];
+      if (map[c]) {
+        history[c] = [...(history[c] || []).slice(-99), map[c]];
+        // Mevcut mumu güncelle
+        if (candles[c] && candles[c].length) {
+          const last = candles[c].at(-1);
+          candles[c] = [...candles[c].slice(-99), {
+            o: last.c, h: Math.max(last.h, map[c]),
+            l: Math.min(last.l, map[c]), c: map[c]
+          }];
+        }
+      }
     });
     updateUI();
     checkAlerts();
@@ -443,6 +479,88 @@ function macd(arr) {
 function ma(arr, p) {
   if (arr.length < p) return arr.at(-1)||0;
   return arr.slice(-p).reduce((a,b)=>a+b,0)/p;
+}
+
+// ─── ICT: FVG ────────────────────────────────────────────────
+// FVG: 3 mumlu yapıda orta mumun gölgesi, önceki ve sonraki mumun gölgelerini geçmiyorsa boşluk oluşur
+function calcFVG(candles) {
+  // candles: [{h, l, o, c}] formatında son N mum
+  const fvgs = [];
+  for (let i = 1; i < candles.length - 1; i++) {
+    const prev = candles[i - 1];
+    const curr = candles[i];
+    const next = candles[i + 1];
+    // Bullish FVG: önceki mumun high'ı ile sonraki mumun low'u arasında boşluk var
+    if (next.l > prev.h) {
+      fvgs.push({ type: 'bull', top: next.l, bot: prev.h, idx: i });
+    }
+    // Bearish FVG: önceki mumun low'u ile sonraki mumun high'ı arasında boşluk var
+    if (next.h < prev.l) {
+      fvgs.push({ type: 'bear', top: prev.l, bot: next.h, idx: i });
+    }
+  }
+  return fvgs.slice(-10); // son 10 FVG
+}
+
+function fvgSignalText(fvgs, price) {
+  if (!fvgs.length) return { txt: 'FVG Yok', c: '#4a4a6a' };
+  // En yakın FVG'yi bul
+  const nearby = fvgs.filter(f => {
+    const mid = (f.top + f.bot) / 2;
+    return Math.abs(price - mid) / price < 0.02; // %2 içinde
+  });
+  if (nearby.length) {
+    const f = nearby[nearby.length - 1];
+    if (f.type === 'bull') return { txt: '⚡ BULLISH', c: '#00ff88' };
+    return { txt: '⚡ BEARISH', c: '#ff4466' };
+  }
+  // Fiyat FVG'ye yaklaşıyor mu?
+  const bullFvgs = fvgs.filter(f => f.type === 'bull' && price > f.bot && price < f.top * 1.05);
+  if (bullFvgs.length) return { txt: '↑ Yaklaşıyor', c: '#00cc66' };
+  const bearFvgs = fvgs.filter(f => f.type === 'bear' && price < f.top && price > f.bot * 0.95);
+  if (bearFvgs.length) return { txt: '↓ Yaklaşıyor', c: '#cc3355' };
+  return { txt: 'Uzakta', c: '#ffb830' };
+}
+
+function updateFVG(candles, price) {
+  const fvgs = calcFVG(candles);
+  const bulls = fvgs.filter(f => f.type === 'bull');
+  const bears = fvgs.filter(f => f.type === 'bear');
+  const sig = fvgSignalText(fvgs, price);
+
+  document.getElementById('fvgBullCount').textContent = bulls.length + ' adet';
+  document.getElementById('fvgBearCount').textContent = bears.length + ' adet';
+  const sigEl = document.getElementById('fvgSignal');
+  sigEl.textContent = sig.txt; sigEl.style.color = sig.c;
+
+  // FVG listesi — son 5 tanesini göster
+  const box = document.getElementById('fvgList');
+  const recent = fvgs.slice(-5).reverse();
+  if (!recent.length) {
+    box.innerHTML = '<div style="font-size:11px;color:var(--muted);text-align:center;padding:8px 0;">Tespit edilemedi</div>';
+    return;
+  }
+  box.innerHTML = recent.map(f => {
+    const isBull = f.type === 'bull';
+    const color = isBull ? '#00ff88' : '#ff4466';
+    const label = isBull ? '▲ Bullish FVG' : '▼ Bearish FVG';
+    const filled = price >= f.bot && price <= f.top;
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;
+        background:${color}0d;border:1px solid ${color}22;border-radius:8px;
+        padding:7px 10px;margin-bottom:5px;">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:${color}">${label}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;">
+            $${fmtPrice(f.bot)} — $${fmtPrice(f.top)}
+          </div>
+        </div>
+        <div style="font-size:10px;color:${filled ? '#ffb830' : color};text-align:right;">
+          ${filled ? '⚠ İÇİNDE' : (price < f.bot ? '↑ Altında' : '↓ Üstünde')}
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function signal(r, m, price, ma20, ma50) {
@@ -552,6 +670,11 @@ function updateUI() {
     const e = document.getElementById(id);
     e.textContent = txt; e.style.color = color;
   });
+
+  // FVG
+  if (candles[selected] && candles[selected].length > 3) {
+    updateFVG(candles[selected], price);
+  }
 }
 
 function drawSpark(data, color) {
