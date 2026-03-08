@@ -282,11 +282,24 @@ let KLINE='4h',INTERVAL=30000,SL_PCT=2,TP1_PCT=2,TP2_PCT=3.5,TP3_PCT=5;
 const BASE='https://api.binance.com/api/v3';
 let history={},candles={},selected=COINS[0],running=true,timer=null,alerts=[],swReg=null,position=null;
 
+// ─── TELEGRAM ────────────────────────────────────────────────
+const TG_TOKEN='8651227426:AAGeN7hRByWAUGPMPmEfMdUiTxsXYYrgiQw';
+const TG_CHAT='1567575556';
+async function sendTelegram(msg){
+  try{
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({chat_id:TG_CHAT,text:msg,parse_mode:'HTML'})
+    });
+  }catch{}
+}
+
 if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').then(r=>swReg=r);
 window.addEventListener('load',()=>{
   if('Notification' in window && Notification.permission==='default')
     document.getElementById('notifBanner').style.display='flex';
   init();
+  sendTelegram('🤖 <b>Signal Bot Başlatıldı</b>\n\nPeriyot: 4H\nCoinler: BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT\n\n✅ Güçlü sinyallerde bildirim gelecek.');
 });
 async function requestNotif(){await Notification.requestPermission();document.getElementById('notifBanner').style.display='none';}
 function sendNotif(title,body){if(swReg&&Notification.permission==='granted')swReg.active?.postMessage({type:'SIGNAL_ALERT',coin:title,signal:body,price:''});}
@@ -381,6 +394,8 @@ function openPos(coin,dir,entry){
     time:new Date().toLocaleTimeString('tr-TR')
   };
   sendNotif(`📥 ${dir} Açıldı — ${coin}`,'Giriş: $'+fmtP(entry));
+  const posEmoji=dir==='LONG'?'📈':'📉';
+  sendTelegram(posEmoji+' <b>POZİSYON AÇILDI</b>\n\nYön: <b>'+dir+'</b>\nCoin: <b>'+coin+'</b>\n💵 Giriş: $'+fmtP(entry)+'\n🛑 Stop Loss: $'+fmtP(entry*(1-(dir==='LONG'?1:-1)*SL_PCT/100))+'\n🎯 TP1: $'+fmtP(entry*(1+(dir==='LONG'?1:-1)*TP1_PCT/100))+'\n🎯 TP2: $'+fmtP(entry*(1+(dir==='LONG'?1:-1)*TP2_PCT/100))+'\n🎯 TP3: $'+fmtP(entry*(1+(dir==='LONG'?1:-1)*TP3_PCT/100)));
   renderPos();
 }
 function closePos(reason='Manuel'){
@@ -389,6 +404,8 @@ function closePos(reason='Manuel'){
   const pnl=((price-position.entry)/position.entry*100*(position.dir==='LONG'?1:-1));
   addAlert(position.coin,`📤 KAPANDI (${reason})`,price,pnl>=0?'#00ff88':'#ff4466',`PnL: ${pnl>=0?'+':''}${pnl.toFixed(2)}%`);
   sendNotif(`📤 Kapandı — ${position.coin}`,`${reason} | PnL: ${pnl.toFixed(2)}%`);
+  const closeEmoji=pnl>=0?'✅':'❌';
+  sendTelegram(closeEmoji+' <b>POZİSYON KAPANDI</b>\n\nCoin: <b>'+position.coin+'</b>\nNeden: '+reason+'\n💰 PnL: <b>'+(pnl>=0?'+':'')+pnl.toFixed(2)+'%</b>\n💵 Kapanış: $'+fmtP(price));
   position=null;
   document.getElementById('posSection').innerHTML='';
 }
@@ -398,8 +415,8 @@ function checkPosition(){
   const lng=position.dir==='LONG';
   if((lng&&price<=position.sl)||(!lng&&price>=position.sl)){closePos('Stop Loss ❌');return;}
   if(!position.tp3hit&&((lng&&price>=position.tp3)||(!lng&&price<=position.tp3))){position.tp3hit=true;closePos('TP3 ✅ Tam Çıkış');return;}
-  if(!position.tp2hit&&((lng&&price>=position.tp2)||(!lng&&price<=position.tp2))){position.tp2hit=true;addAlert(position.coin,'🎯 TP2 HIT — %50 Çıkış',price,'#00ff88');sendNotif('🎯 TP2 — '+position.coin,'$'+fmtP(price));}
-  if(!position.tp1hit&&((lng&&price>=position.tp1)||(!lng&&price<=position.tp1))){position.tp1hit=true;addAlert(position.coin,'🎯 TP1 HIT — %25 Çıkış',price,'#00cc66');sendNotif('🎯 TP1 — '+position.coin,'$'+fmtP(price));}
+  if(!position.tp2hit&&((lng&&price>=position.tp2)||(!lng&&price<=position.tp2))){position.tp2hit=true;addAlert(position.coin,'🎯 TP2 HIT — %50 Çıkış',price,'#00ff88');sendNotif('🎯 TP2 — '+position.coin,'$'+fmtP(price));sendTelegram('🎯 <b>TP2 HIT!</b> — <b>'+position.coin+'</b>\n💰 $'+fmtP(price)+'\n%50 pozisyon kapatıldı');}
+  if(!position.tp1hit&&((lng&&price>=position.tp1)||(!lng&&price<=position.tp1))){position.tp1hit=true;addAlert(position.coin,'🎯 TP1 HIT — %25 Çıkış',price,'#00cc66');sendNotif('🎯 TP1 — '+position.coin,'$'+fmtP(price));sendTelegram('🎯 <b>TP1 HIT!</b> — <b>'+position.coin+'</b>\n💰 $'+fmtP(price)+'\n%25 pozisyon kapatıldı');}
   renderPos();
 }
 function renderPos(){
@@ -537,6 +554,9 @@ function checkAlerts(){
       addAlert(coin,res.type,res.price,res.color);
       sendNotif(res.type+' — '+coin,'$'+fmtP(res.price));
       document.getElementById('liveBadge').style.display='inline';
+      // Telegram bildirim
+      const emoji=res.type==='GÜÇLÜ AL'?'🟢':'🔴';
+      sendTelegram(emoji+' <b>'+res.type+'</b> — <b>'+coin+'</b>\n\n💰 Fiyat: $'+fmtP(res.price)+'\n📊 Skor: '+(res.sc>=0?'+':'')+res.sc+'/8\n⏱ Periyot: 4H\n🕐 '+new Date().toLocaleTimeString('tr-TR'));
       if(!position&&coin===selected)openPos(coin,res.type==='GÜÇLÜ AL'?'LONG':'SHORT',res.price);
     }
   });
